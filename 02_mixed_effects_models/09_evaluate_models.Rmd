@@ -1,0 +1,356 @@
+---
+title: "Evaluate the mixed-effects models (inputs for Fig. 3)"
+output: html_document
+---
+
+This notebook summarises the linear mixed-effects models fitted by
+`01_fit_composition_models.R` to `04_fit_diversity_aridity_interactions.R`.
+For the baseline model and for every single-predictor model it extracts the
+fixed-effect coefficients (with 95% CIs and p-values) and the model performance
+(marginal / conditional R2, ICC, AIC, RMSE), and computes the partial R2 and
+delta AIC of the added term relative to the baseline model.
+
+* Inputs (in this folder): `LME_GPP_LAI_T_P_AI_ecoprovince_SA.rds`,
+  `LME_GPP_LAI_T_P_AI_trait_ecoprovince_SA_model_list.rds`,
+  `LME_GPP_LAI_T_P_AI_FD_ecoprovince_SA_model_list.rds`,
+  `LME_GPP_LAI_T_P_AI_trait_AI_ecoprovince_SA_model_list.rds`,
+  `LME_GPP_LAI_T_P_AI_FD_AI_ecoprovince_SA_model_list.rds`
+* Outputs (`results/`): `LME_GPP_LAI_T_P_AI_ecoprovince_SA_results.csv`,
+  `LME_GPP_LAI_T_P_AI_trait_ecoprovince_SA_results.csv`,
+  `LME_GPP_LAI_T_P_AI_FD_ecoprovince_SA_results.csv`,
+  `LME_GPP_LAI_T_P_AI_trait_AI_ecoprovince_SA_results.csv`,
+  `LME_GPP_LAI_T_P_AI_FD_AI_ecoprovince_SA_results.csv`
+* Run order: after `08_export_interaction_model.R`, before `10_evaluate_pft_models.Rmd`
+  (knit with the working directory set to this folder).
+* Feeds: Fig. 3 (`11_plot_fig3.py`).
+
+```{r setup}
+library(nlme)
+library(performance)
+library(knitr)
+library(dplyr)
+
+dir.create("results", showWarnings = FALSE)
+
+# Predictors tested one at a time (must match the fitting scripts)
+trait_list <- c('Carbon', 'Cellulose', 'ChlorophyllsArea', 'EWT', 'Lignin', 'Nitrogen',
+                'NSC', 'Phenolics', 'SLA', 'canopy_height', 'all_PC1', 'all_PC2', 'all_PC3')
+
+FD_list <- c('FRic_alpha', 'FDiv_alpha', 'FRic_gamma', 'FDiv_gamma', 'FRic_tau', 'FDiv_tau',
+             'Fbeta_alpha_to_gamma', 'Fbeta_gamma_to_tau')
+
+```
+# Baseline: GPP ~ LAI + Temperature + Precipitation + aridity_index + 1|ecoprovince
+```{r baseline}
+# Load the baseline model
+model_LAI <- readRDS("LME_GPP_LAI_T_P_AI_ecoprovince_SA.rds")
+cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+
+# LAI coefficient and its CI
+coef_LAI <- summary(model_LAI)$tTable["LAI", "Value"]
+coef_LAI_CI_lower <- intervals(model_LAI, level = 0.95, which = "fixed")$fixed["LAI", "lower"]
+coef_LAI_CI_upper <- intervals(model_LAI, level = 0.95, which = "fixed")$fixed["LAI", "upper"]
+
+perf_LAI <- model_performance(model_LAI, estimator = "ML")
+R2_marginal_LAI <- perf_LAI$R2_marginal
+R2_conditional_LAI <- perf_LAI$R2_conditional
+ICC_LAI <- perf_LAI$ICC
+AIC_LAI <- perf_LAI$AIC
+RMSE_LAI <- perf_LAI$RMSE
+
+# Combine results
+results_df <- data.frame(model = "LAI",
+                         coef_LAI = coef_LAI,
+                         coef_LAI_CI_lower = coef_LAI_CI_lower,
+                         coef_LAI_CI_upper = coef_LAI_CI_upper,
+                         R2_marginal = R2_marginal_LAI,
+                         R2_conditional = R2_conditional_LAI,
+                         ICC = ICC_LAI,
+                         AIC = AIC_LAI,
+                         RMSE = RMSE_LAI)
+
+# Write CSV and print
+write.csv(results_df, "results/LME_GPP_LAI_T_P_AI_ecoprovince_SA_results.csv", row.names = FALSE)
+kable(results_df, format = "markdown")
+
+```
+
+# Functional composition: GPP ~ LAI + Temperature + Precipitation + aridity_index + trait + 1|ecoprovince
+
+```{r composition}
+# Load the model list
+model_list <- readRDS("LME_GPP_LAI_T_P_AI_trait_ecoprovince_SA_model_list.rds")
+cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+
+perf_LAI <- model_performance(model_LAI, estimator = "ML")
+partial_R2_LAI <- perf_LAI$R2_marginal
+
+results_list <- list()
+for (trait in trait_list) {
+  model <- model_list[[trait]]
+
+  # LAI coefficient and CI
+  coef_LAI <- summary(model)$tTable["LAI", "Value"]
+  coef_LAI_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed["LAI", "lower"]
+  coef_LAI_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed["LAI", "upper"]
+
+  # Trait coefficient and CI
+  coef_trait <- summary(model)$tTable[trait, "Value"]
+  coef_trait_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed[trait, "lower"]
+  coef_trait_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed[trait, "upper"]
+
+  p_value_trait <- summary(model)$tTable[trait, "p-value"]
+
+  # Model performance
+  perf <- model_performance(model, estimator = "ML")
+  R2_marginal <- perf$R2_marginal
+  R2_conditional <- ifelse(is.na(perf$R2_conditional), R2_marginal, perf$R2_conditional)
+  AIC <- perf$AIC
+  ICC <- ifelse(is.null(perf$ICC), 0, perf$ICC)
+  RMSE <- perf$RMSE
+
+  partial_R2_trait <- R2_marginal - partial_R2_LAI
+  delta_AIC <- AIC - perf_LAI$AIC
+
+  results_list[[trait]] <- data.frame(trait = trait,
+                                      coef_LAI = coef_LAI,
+                                      coef_LAI_CI_lower = coef_LAI_CI_lower,
+                                      coef_LAI_CI_upper = coef_LAI_CI_upper,
+                                      coef_trait = coef_trait,
+                                      coef_trait_CI_lower = coef_trait_CI_lower,
+                                      coef_trait_CI_upper = coef_trait_CI_upper,
+                                      p_value_trait = p_value_trait,
+                                      R2_marginal = R2_marginal,
+                                      R2_conditional = R2_conditional,
+                                      partial_R2_LAI = partial_R2_LAI,
+                                      partial_R2_trait = partial_R2_trait,
+                                      AIC = AIC,
+                                      delta_AIC = delta_AIC,
+                                      ICC = ICC,
+                                      RMSE = RMSE)
+}
+
+results_df <- bind_rows(results_list)
+
+# Significance star
+results_df <- results_df %>%
+  mutate(`p-value` = ifelse(p_value_trait < 0.05, "*", ""))
+
+write.csv(results_df, "results/LME_GPP_LAI_T_P_AI_trait_ecoprovince_SA_results.csv", row.names = FALSE)
+kable(results_df, format = "markdown")
+
+```
+
+# Functional diversity: GPP ~ LAI + Temperature + Precipitation + aridity_index + FD + 1|ecoprovince
+
+```{r diversity}
+# Load the model list
+model_list <- readRDS("LME_GPP_LAI_T_P_AI_FD_ecoprovince_SA_model_list.rds")
+cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+
+perf_LAI <- model_performance(model_LAI, estimator = "ML")
+partial_R2_LAI <- perf_LAI$R2_marginal
+
+results_list <- list()
+for (FD in FD_list) {
+  model <- model_list[[FD]]
+
+  # LAI coefficient and CI
+  coef_LAI <- summary(model)$tTable["LAI", "Value"]
+  coef_LAI_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed["LAI", "lower"]
+  coef_LAI_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed["LAI", "upper"]
+
+  # FD coefficient and CI
+  coef_FD <- summary(model)$tTable[FD, "Value"]
+  coef_FD_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed[FD, "lower"]
+  coef_FD_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed[FD, "upper"]
+
+  p_value_FD <- summary(model)$tTable[FD, "p-value"]
+
+  perf <- model_performance(model, estimator = "ML")
+  R2_marginal <- perf$R2_marginal
+  R2_conditional <- perf$R2_conditional
+  AIC <- perf$AIC
+  ICC <- ifelse(is.null(perf$ICC), 0, perf$ICC)
+  RMSE <- perf$RMSE
+
+  partial_R2_FD <- R2_marginal - partial_R2_LAI
+  delta_AIC <- AIC - perf_LAI$AIC
+
+  results_list[[FD]] <- data.frame(FD = FD,
+                                   coef_LAI = coef_LAI,
+                                   coef_LAI_CI_lower = coef_LAI_CI_lower,
+                                   coef_LAI_CI_upper = coef_LAI_CI_upper,
+                                   coef_FD = coef_FD,
+                                   coef_FD_CI_lower = coef_FD_CI_lower,
+                                   coef_FD_CI_upper = coef_FD_CI_upper,
+                                   p_value_FD = p_value_FD,
+                                   R2_marginal = R2_marginal,
+                                   R2_conditional = R2_conditional,
+                                   partial_R2_LAI = partial_R2_LAI,
+                                   partial_R2_FD = partial_R2_FD,
+                                   AIC = AIC,
+                                   delta_AIC = delta_AIC,
+                                   ICC = ICC,
+                                   RMSE = RMSE)
+}
+
+results_df <- bind_rows(results_list)
+
+results_df <- results_df %>%
+  mutate(`p-value` = ifelse(p_value_FD < 0.05, "*", ""))
+
+write.csv(results_df, "results/LME_GPP_LAI_T_P_AI_FD_ecoprovince_SA_results.csv", row.names = FALSE)
+kable(results_df, format = "markdown")
+
+```
+
+# Composition x aridity: GPP ~ LAI + Temperature + Precipitation + aridity_index + trait * aridity_index + 1|ecoprovince
+
+```{r composition-aridity}
+# Load the model list
+model_list <- readRDS("LME_GPP_LAI_T_P_AI_trait_AI_ecoprovince_SA_model_list.rds")
+cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+
+perf_LAI <- model_performance(model_LAI, estimator = "ML")
+partial_R2_LAI <- perf_LAI$R2_marginal
+
+results_list <- list()
+for (trait in trait_list) {
+  model <- model_list[[trait]]
+
+  # LAI coefficient and CI
+  coef_LAI <- summary(model)$tTable["LAI", "Value"]
+  coef_LAI_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed["LAI", "lower"]
+  coef_LAI_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed["LAI", "upper"]
+
+  # Trait main effect and CI
+  coef_trait <- summary(model)$tTable[trait, "Value"]
+  coef_trait_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed[trait, "lower"]
+  coef_trait_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed[trait, "upper"]
+
+  p_value_trait <- summary(model)$tTable[trait, "p-value"]
+
+  # Interaction term: named "aridity_index:trait" in the fixed-effects table
+  interaction_name <- paste("aridity_index", trait, sep = ":")
+  coef_interaction <- summary(model)$tTable[interaction_name, "Value"]
+  coef_interaction_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed[interaction_name, "lower"]
+  coef_interaction_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed[interaction_name, "upper"]
+  p_value_interaction <- summary(model)$tTable[interaction_name, "p-value"]
+
+  perf <- model_performance(model, estimator = "ML")
+  R2_marginal <- perf$R2_marginal
+  R2_conditional <- ifelse(is.na(perf$R2_conditional), R2_marginal, perf$R2_conditional)
+  AIC <- perf$AIC
+  ICC <- ifelse(is.null(perf$ICC), 0, perf$ICC)
+  RMSE <- perf$RMSE
+
+  partial_R2_trait <- R2_marginal - partial_R2_LAI
+  delta_AIC <- AIC - perf_LAI$AIC
+
+  results_list[[trait]] <- data.frame(trait = trait,
+                                      coef_LAI = coef_LAI,
+                                      coef_LAI_CI_lower = coef_LAI_CI_lower,
+                                      coef_LAI_CI_upper = coef_LAI_CI_upper,
+                                      coef_trait = coef_trait,
+                                      coef_trait_CI_lower = coef_trait_CI_lower,
+                                      coef_trait_CI_upper = coef_trait_CI_upper,
+                                      p_value_trait = p_value_trait,
+                                      coef_interaction = coef_interaction,
+                                      coef_interaction_CI_lower = coef_interaction_CI_lower,
+                                      coef_interaction_CI_upper = coef_interaction_CI_upper,
+                                      p_value_interaction = p_value_interaction,
+                                      R2_marginal = R2_marginal,
+                                      R2_conditional = R2_conditional,
+                                      partial_R2_LAI = partial_R2_LAI,
+                                      partial_R2_trait = partial_R2_trait,
+                                      AIC = AIC,
+                                      delta_AIC = delta_AIC,
+                                      ICC = ICC,
+                                      RMSE = RMSE)
+}
+
+results_df <- bind_rows(results_list)
+
+results_df <- results_df %>%
+  mutate(`p-value` = ifelse(p_value_interaction < 0.05, "*", ""))
+
+write.csv(results_df, "results/LME_GPP_LAI_T_P_AI_trait_AI_ecoprovince_SA_results.csv", row.names = FALSE)
+kable(results_df, format = "markdown")
+
+```
+# Diversity x aridity: GPP ~ LAI + Temperature + Precipitation + aridity_index + FD * aridity_index + 1|ecoprovince
+
+
+```{r diversity-aridity}
+# Load the model list
+model_list <- readRDS("LME_GPP_LAI_T_P_AI_FD_AI_ecoprovince_SA_model_list.rds")
+cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+
+perf_LAI <- model_performance(model_LAI, estimator = "ML")
+partial_R2_LAI <- perf_LAI$R2_marginal
+
+results_list <- list()
+for (FD in FD_list) {
+  model <- model_list[[FD]]
+
+  # LAI coefficient and CI
+  coef_LAI <- summary(model)$tTable["LAI", "Value"]
+  coef_LAI_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed["LAI", "lower"]
+  coef_LAI_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed["LAI", "upper"]
+
+  # FD main effect and CI
+  coef_FD <- summary(model)$tTable[FD, "Value"]
+  coef_FD_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed[FD, "lower"]
+  coef_FD_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed[FD, "upper"]
+
+  p_value_FD <- summary(model)$tTable[FD, "p-value"]
+
+  # Interaction term: named "aridity_index:FD" in the fixed-effects table
+  interaction_name <- paste("aridity_index", FD, sep = ":")
+  coef_interaction <- summary(model)$tTable[interaction_name, "Value"]
+  coef_interaction_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed[interaction_name, "lower"]
+  coef_interaction_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed[interaction_name, "upper"]
+  p_value_interaction <- summary(model)$tTable[interaction_name, "p-value"]
+
+  perf <- model_performance(model, estimator = "ML")
+  R2_marginal <- perf$R2_marginal
+  R2_conditional <- ifelse(is.na(perf$R2_conditional), R2_marginal, perf$R2_conditional)
+  AIC <- perf$AIC
+  ICC <- ifelse(is.null(perf$ICC), 0, perf$ICC)
+  RMSE <- perf$RMSE
+
+  partial_R2_FD <- R2_marginal - partial_R2_LAI
+  delta_AIC <- AIC - perf_LAI$AIC
+
+  results_list[[FD]] <- data.frame(FD = FD,
+                                   coef_LAI = coef_LAI,
+                                   coef_LAI_CI_lower = coef_LAI_CI_lower,
+                                   coef_LAI_CI_upper = coef_LAI_CI_upper,
+                                   coef_FD = coef_FD,
+                                   coef_FD_CI_lower = coef_FD_CI_lower,
+                                   coef_FD_CI_upper = coef_FD_CI_upper,
+                                   p_value_FD = p_value_FD,
+                                   coef_interaction = coef_interaction,
+                                   coef_interaction_CI_lower = coef_interaction_CI_lower,
+                                   coef_interaction_CI_upper = coef_interaction_CI_upper,
+                                   p_value_interaction = p_value_interaction,
+                                   R2_marginal = R2_marginal,
+                                   R2_conditional = R2_conditional,
+                                   partial_R2_LAI = partial_R2_LAI,
+                                   partial_R2_FD = partial_R2_FD,
+                                   AIC = AIC,
+                                   delta_AIC = delta_AIC,
+                                   ICC = ICC,
+                                   RMSE = RMSE)
+}
+
+results_df <- bind_rows(results_list)
+
+results_df <- results_df %>%
+  mutate(`p-value` = ifelse(p_value_interaction < 0.05, "*", ""))
+
+write.csv(results_df, "results/LME_GPP_LAI_T_P_AI_FD_AI_ecoprovince_SA_results.csv", row.names = FALSE)
+kable(results_df, format = "markdown")
+
+```

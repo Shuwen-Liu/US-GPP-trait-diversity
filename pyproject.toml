@@ -1,0 +1,23 @@
+[project]
+name = "us-gpp-trait-diversity"
+version = "1.0.0"
+description = "Analysis code for: Continental functional trait and functional diversity maps reveal aridity-mediated relationships with productivity"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "seaborn",
+    "scikit-learn",
+    "gpboost==1.5.5",
+    "optuna",
+    "shap",
+    "rasterio",
+    "marimo",
+    "ipykernel",
+]
+
+[tool.uv]
+package = false

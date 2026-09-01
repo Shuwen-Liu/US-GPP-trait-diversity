@@ -1,0 +1,27 @@
+# Data and outputs are never committed: download the archive into data/ and
+# each stage writes into its own results/ (or models/) folder.
+data/*
+!data/README.md
+!data/organize_zenodo_files.py
+**/results/
+**/models/
+
+# Python / notebooks
+__pycache__/
+*.py[cod]
+.venv/
+.ipynb_checkpoints/
+__marimo__/
+
+# R
+.Rproj.user/
+*.Rproj
+*.Rhistory
+*.rds
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

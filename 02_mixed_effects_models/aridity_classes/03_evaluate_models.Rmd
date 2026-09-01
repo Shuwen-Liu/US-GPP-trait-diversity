@@ -1,0 +1,197 @@
+---
+title: "Evaluate the aridity-class mixed-effects models (inputs for Fig. 4)"
+output: html_document
+---
+
+This notebook summarises the per-aridity-class models fitted by
+`01_fit_composition_models.R` and `02_fit_diversity_models.R`. For every
+trait (or FD metric) and aridity class it extracts the LAI and trait / FD
+coefficients (with 95% CIs and p-values), the model performance (marginal /
+conditional R2, AIC, RMSE) and the partial R2 and delta AIC relative to the
+baseline model of the same aridity class.
+
+* Inputs (in this folder):
+  `LME_AI_class_GPP_LAI_T_P_AI_trait_ecoprovince_SA_model_list_grouped.rds`,
+  `LME_AI_class_GPP_LAI_T_P_AI_FD_ecoprovince_SA_model_list_grouped.rds`,
+  `LME_AI_class_GPP_LAI_T_P_AI_ecoprovince_SA_model_list_grouped.rds`
+* Outputs (`results/`): `LME_GPP_LAI_T_P_AI_class_trait_ecoprovince_SA_results.csv`,
+  `LME_GPP_LAI_T_P_AI_class_FD_ecoprovince_SA_results.csv`
+* Run order: after `02_fit_diversity_models.R`, before `04_plot_fig4.ipynb`
+  (knit with the working directory set to `aridity_classes/`).
+* Feeds: Fig. 4 (`04_plot_fig4.ipynb`).
+
+```{r setup}
+library(nlme)
+library(performance)
+library(knitr)
+library(dplyr)
+
+dir.create("results", showWarnings = FALSE)
+
+# Predictors tested one at a time (must match the fitting scripts)
+trait_list <- c('Carbon', 'Cellulose', 'ChlorophyllsArea', 'EWT', 'Lignin', 'Nitrogen',
+                'NSC', 'Phenolics', 'SLA', 'canopy_height', 'all_PC1', 'all_PC2', 'all_PC3')
+
+FD_list <- c('FRic_alpha', 'FDiv_alpha', 'FRic_gamma', 'FDiv_gamma', 'FRic_tau', 'FDiv_tau',
+             'Fbeta_alpha_to_gamma', 'Fbeta_gamma_to_tau')
+
+aridity_index_class_list <- c('Arid', 'Semi-arid', 'Dry sub-humid', 'Sub-humid', 'Humid')
+
+```
+
+# Functional composition: GPP ~ LAI + Temperature + Precipitation + aridity_index + trait + 1|ecoprovince, per aridity class
+
+```{r composition}
+# Load the model lists
+model_list <- readRDS("LME_AI_class_GPP_LAI_T_P_AI_trait_ecoprovince_SA_model_list_grouped.rds")
+model_LAI_list <- readRDS("LME_AI_class_GPP_LAI_T_P_AI_ecoprovince_SA_model_list_grouped.rds")
+cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+
+# Evaluate every trait x aridity-class model
+results_list <- list()
+i <- 1
+for (trait in trait_list) {
+  for (aridity_index_class in aridity_index_class_list)
+  {
+    model <- model_list[[trait]][[aridity_index_class]]$model
+
+    # Coefficients, CIs and p-value
+    coef_LAI <- summary(model)$tTable['LAI', 'Value']
+    coef_LAI_CI_lower <- intervals(model, level = 0.95,which = "fixed")$fixed['LAI', 'lower']
+    coef_LAI_CI_upper <- intervals(model, level = 0.95,which = "fixed")$fixed['LAI', 'upper']
+    coef_trait <- summary(model)$tTable[trait, 'Value']
+    coef_trait_CI_lower <- intervals(model, level = 0.95,which = "fixed")$fixed[trait, 'lower']
+    coef_trait_CI_upper <- intervals(model, level = 0.95,which = "fixed")$fixed[trait, 'upper']
+    p_value_trait <- summary(model)$tTable[trait, 'p-value']
+
+    # Model performance (marginal and conditional R2)
+    perf <- model_performance(model, estimator = "ML")
+    R2_marginal <- perf$R2_marginal
+    R2_conditional <- perf$R2_conditional
+    AIC <- perf$AIC
+    ICC <- perf$ICC
+    RMSE <- perf$RMSE
+
+    # Partial R2 of LAI and of the trait (relative to the baseline of the same class)
+    model_LAI <- model_LAI_list[[aridity_index_class]]$model
+    perf_LAI <- model_performance(model_LAI, estimator = "ML")
+    partial_R2_LAI <- perf_LAI$R2_marginal
+
+    partial_R2_trait <- R2_marginal - partial_R2_LAI
+
+    delta_AIC <- AIC - model_performance(model_LAI, estimator = "ML")$AIC
+
+    # Store the results
+    results_list[[i]] <- data.frame(trait = trait,
+                                        aridity_index_class = aridity_index_class,
+                                       coef_LAI = coef_LAI,
+                                       coef_LAI_CI_lower = coef_LAI_CI_lower,
+                                       coef_LAI_CI_upper = coef_LAI_CI_upper,
+                                       coef_trait = coef_trait,
+                                       coef_trait_CI_lower = coef_trait_CI_lower,
+                                       coef_trait_CI_upper = coef_trait_CI_upper,
+                                       p_value_trait = p_value_trait,
+                                       R2_marginal = R2_marginal,
+                                       R2_conditional = R2_conditional,
+                                       partial_R2_LAI = partial_R2_LAI,
+                                       partial_R2_trait = partial_R2_trait,
+                                       AIC = AIC,
+                                       delta_AIC = delta_AIC,
+                                       RMSE = RMSE)
+    i <- i + 1
+  }
+
+}
+
+# Combine results
+results_df <- bind_rows(results_list)
+
+# Significance star
+results_df <- results_df %>%
+  mutate(`p-value` = ifelse(p_value_trait < 0.05, '*', ''))
+
+write.csv(results_df, "./results/LME_GPP_LAI_T_P_AI_class_trait_ecoprovince_SA_results.csv", row.names = FALSE)
+
+# Print results
+kable(results_df, format = "markdown")
+
+```
+
+
+
+# Functional diversity: GPP ~ LAI + Temperature + Precipitation + aridity_index + FD + 1|ecoprovince, per aridity class
+
+```{r diversity}
+# Load the model list
+model_list <- readRDS("LME_AI_class_GPP_LAI_T_P_AI_FD_ecoprovince_SA_model_list_grouped.rds")
+cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+
+# Evaluate every FD x aridity-class model
+results_list <- list()
+i <- 1
+for (FD in FD_list) {
+  for (aridity_index_class in aridity_index_class_list)
+  {
+    model <- model_list[[FD]][[aridity_index_class]]$model
+
+    # Coefficients, CIs and p-value
+    coef_LAI <- summary(model)$tTable['LAI', 'Value']
+    coef_LAI_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed['LAI', 'lower']
+    coef_LAI_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed['LAI', 'upper']
+    coef_FD <- summary(model)$tTable[FD, 'Value']
+    coef_FD_CI_lower <- intervals(model, level = 0.95, which = "fixed")$fixed[FD, 'lower']
+    coef_FD_CI_upper <- intervals(model, level = 0.95, which = "fixed")$fixed[FD, 'upper']
+    p_value_FD <- summary(model)$tTable[FD, 'p-value']
+
+    # Model performance (marginal and conditional R2)
+    perf <- model_performance(model, estimator = "ML")
+    R2_marginal <- perf$R2_marginal
+    R2_conditional <- perf$R2_conditional
+    AIC <- perf$AIC
+    ICC <- perf$ICC
+    RMSE <- perf$RMSE
+
+    # Partial R2 of LAI and of the FD metric (relative to the baseline of the same class)
+    model_LAI <- model_LAI_list[[aridity_index_class]]$model
+    perf_LAI <- model_performance(model_LAI, estimator = "ML")
+    partial_R2_LAI <- perf_LAI$R2_marginal
+
+    partial_R2_FD <- R2_marginal - partial_R2_LAI
+
+    delta_AIC <- AIC - model_performance(model_LAI, estimator = "ML")$AIC
+
+    # Store the results
+    results_list[[i]] <- data.frame(FD = FD,
+                                        aridity_index_class = aridity_index_class,
+                                       coef_LAI = coef_LAI,
+                                       coef_LAI_CI_lower = coef_LAI_CI_lower,
+                                       coef_LAI_CI_upper = coef_LAI_CI_upper,
+                                       coef_FD = coef_FD,
+                                       coef_FD_CI_lower = coef_FD_CI_lower,
+                                       coef_FD_CI_upper = coef_FD_CI_upper,
+                                       p_value_FD = p_value_FD,
+                                       R2_marginal = R2_marginal,
+                                       R2_conditional = R2_conditional,
+                                       partial_R2_LAI = partial_R2_LAI,
+                                       partial_R2_FD = partial_R2_FD,
+                                       AIC = AIC,
+                                       delta_AIC = delta_AIC,
+                                       RMSE = RMSE)
+    i <- i + 1
+  }
+
+}
+
+# Combine results
+results_df <- bind_rows(results_list)
+
+# Significance star
+results_df <- results_df %>%
+  mutate(`p-value` = ifelse(p_value_FD < 0.05, '*', ''))
+
+write.csv(results_df, "./results/LME_GPP_LAI_T_P_AI_class_FD_ecoprovince_SA_results.csv", row.names = FALSE)
+
+# Print results
+kable(results_df, format = "markdown")
+
+```

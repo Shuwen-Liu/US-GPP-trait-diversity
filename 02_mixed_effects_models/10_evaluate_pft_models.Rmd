@@ -1,0 +1,145 @@
+---
+title: "Plant functional type (PFT) comparison models (inputs for Fig. 3)"
+output: html_document
+---
+
+This notebook fits and evaluates the two alternative models in which plant
+functional type (IGBP class) replaces the trait / functional-diversity terms:
+
+1. `GPP ~ LAI + Temperature + Precipitation + aridity_index + IGBP + (1 | ecoprovince)`
+2. `GPP ~ LAI + Temperature + Precipitation + aridity_index * IGBP + (1 | ecoprovince)`
+
+Both use the same Gaussian spatial correlation structure
+(`corGaus(~ latitude + longitude, nugget = TRUE)`) as the other models in this
+folder, and are compared with the baseline model (partial R2 and delta AIC).
+
+* Inputs: `../data/analysis_ready_tables/data.csv`,
+  `LME_GPP_LAI_T_P_AI_ecoprovince_SA.rds` (baseline, from `01_fit_composition_models.R`)
+* Outputs: `LME_GPP_LAI_T_P_AI_IGBP_ecoprovince_SA.rds`,
+  `LME_GPP_LAI_T_P_AI_IGBP_AI_ecoprovince_SA.rds`,
+  `results/LME_GPP_LAI_T_P_AI_IGBP_ecoprovince_SA_results.csv`,
+  `results/LME_GPP_LAI_T_P_AI_IGBP_AI_ecoprovince_SA_results.csv`
+* Run order: after `09_evaluate_models.Rmd`, before `11_plot_fig3.py`
+  (knit with the working directory set to this folder).
+* Feeds: Fig. 3, "+ PFT" panel (`11_plot_fig3.py`).
+
+```{r setup, include=FALSE}
+library(nlme)
+library(performance)
+library(knitr)
+library(dplyr)
+
+dir.create("results", showWarnings = FALSE)
+```
+
+# Fit model: GPP ~ LAI + Temperature + Precipitation + aridity_index + IGBP + (1 | ecoprovince)
+
+Baseline model (LAI + T + P + AI) plus PFT (IGBP as a categorical fixed effect).
+The model is fitted only if the saved `.rds` does not already exist.
+
+```{r fit-model}
+# Load the analysis-ready table
+data <- read.csv("../data/analysis_ready_tables/data.csv")
+
+# IGBP as a factor
+data$IGBP <- as.factor(data$IGBP)
+
+model_file <- "LME_GPP_LAI_T_P_AI_IGBP_ecoprovince_SA.rds"
+
+if (file.exists(model_file)) {
+  model_IGBP <- readRDS(model_file)
+} else {
+  formula <- as.formula("GPP ~ LAI + Temperature + Precipitation + aridity_index + IGBP")
+  cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+  model_IGBP <- lme(fixed = formula,
+                    random = ~ 1 | ecoprovince,
+                    data = data,
+                    method = "ML",
+                    correlation = cor_struct)
+  saveRDS(model_IGBP, model_file)
+}
+
+# Baseline model (without IGBP), the reference for partial R2 and delta AIC
+model_LAI <- readRDS("LME_GPP_LAI_T_P_AI_ecoprovince_SA.rds")
+```
+
+# Model performance and comparison with the baseline (LAI + T + P + AI)
+
+```{r performance}
+perf_IGBP <- model_performance(model_IGBP, estimator = "ML")
+perf_LAI  <- model_performance(model_LAI,  estimator = "ML")
+
+R2_marginal_LAI    <- perf_LAI$R2_marginal
+R2_marginal_IGBP   <- perf_IGBP$R2_marginal
+R2_conditional_IGBP <- ifelse(is.na(perf_IGBP$R2_conditional),
+                              R2_marginal_IGBP, perf_IGBP$R2_conditional)
+ICC_IGBP  <- ifelse(is.null(perf_IGBP$ICC), 0, perf_IGBP$ICC)
+
+# Overall significance of IGBP (likelihood-ratio test against the baseline)
+anova_res <- anova(model_LAI, model_IGBP)
+p_LRT_IGBP <- anova_res[2, "p-value"]
+
+results_df <- data.frame(
+  model                = "LAI_T_P_AI_IGBP",
+  n_IGBP_levels        = nlevels(data$IGBP),
+  R2_marginal          = R2_marginal_IGBP,
+  R2_conditional       = R2_conditional_IGBP,
+  partial_R2_LAI       = R2_marginal_LAI,
+  partial_R2_IGBP      = R2_marginal_IGBP - R2_marginal_LAI,
+  ICC                  = ICC_IGBP,
+  AIC                  = perf_IGBP$AIC,
+  delta_AIC_vs_null    = perf_IGBP$AIC - perf_LAI$AIC,
+  RMSE                 = perf_IGBP$RMSE,
+  LRT_p_value_vs_null  = p_LRT_IGBP
+)
+
+write.csv(results_df,
+          "results/LME_GPP_LAI_T_P_AI_IGBP_ecoprovince_SA_results.csv",
+          row.names = FALSE)
+kable(results_df, format = "markdown", digits = 4)
+```
+
+# Fit model: GPP ~ LAI + T + P + AI + IGBP + IGBP:AI + (1 | ecoprovince)
+
+IGBP (categorical) interacting with aridity_index, i.e. a separate aridity
+slope for each IGBP class. The model keeps the IGBP main effect (class-specific
+intercepts) and the IGBP:aridity_index term (class-specific slopes).
+
+```{r fit-igbp-ai}
+model_file_int <- "LME_GPP_LAI_T_P_AI_IGBP_AI_ecoprovince_SA.rds"
+
+if (file.exists(model_file_int)) {
+  model_IGBP_AI <- readRDS(model_file_int)
+} else {
+  formula_int <- as.formula(
+    "GPP ~ LAI + Temperature + Precipitation + aridity_index * IGBP"
+  )
+  cor_struct <- corGaus(form = ~ latitude + longitude, nugget = TRUE)
+  model_IGBP_AI <- lme(fixed = formula_int,
+                       random = ~ 1 | ecoprovince,
+                       data = data,
+                       method = "ML",
+                       correlation = cor_struct)
+  saveRDS(model_IGBP_AI, model_file_int)
+}
+```
+
+## Performance comparison (Null vs +IGBP vs +IGBP*AI)
+
+```{r perf-int}
+perf_int <- model_performance(model_IGBP_AI, estimator = "ML")
+
+compare_df <- data.frame(
+  model          = c("Null", "Null + IGBP", "Null + IGBP*AI"),
+  R2_marginal    = c(perf_LAI$R2_marginal,  perf_IGBP$R2_marginal,  perf_int$R2_marginal),
+  R2_conditional = c(perf_LAI$R2_conditional, perf_IGBP$R2_conditional, perf_int$R2_conditional),
+  AIC            = c(perf_LAI$AIC, perf_IGBP$AIC, perf_int$AIC),
+  RMSE           = c(perf_LAI$RMSE, perf_IGBP$RMSE, perf_int$RMSE)
+) %>%
+  mutate(delta_AIC_vs_null = AIC - perf_LAI$AIC)
+
+write.csv(compare_df,
+          "results/LME_GPP_LAI_T_P_AI_IGBP_AI_ecoprovince_SA_results.csv",
+          row.names = FALSE)
+kable(compare_df, format = "markdown", digits = 4)
+```
